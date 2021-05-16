@@ -52,6 +52,8 @@ parser.add_argument('--adv_weight', type=float, default=0.01,
 # training specifications 
 parser.add_argument('--iterations', type=int, default=1e6,
                     help='the number of iterations for training')
+parser.add_argument('--idx_offset', type=int, default=0,
+                    help='the number of images to skip')
 parser.add_argument('--batch_size', type=int, default=1,
                     help='batch size in each mini-batch')
 parser.add_argument('--port', type=int, default=22334,

@@ -61,6 +61,7 @@ class TerrainDataset(Dataset):
         random_state=42,
         usable_portion=1.0,
         fast_load=False,
+        idx_offset=0,
         transform=None,
     ):
         """
@@ -76,6 +77,7 @@ class TerrainDataset(Dataset):
         random_state -> a value that gets added to seed
         usable_portion -> What % of the data will be used
         fast_load -> initialize from npy file, Warning: Dragons be aware
+        idx_offset -> number of images to skip (because of empty masks)
         transform -> if there is any, PyTorch Transforms
         """
         np.seterr(divide="ignore", invalid="ignore")
@@ -99,6 +101,7 @@ class TerrainDataset(Dataset):
         self.randomize = False if fast_load else randomize
         self.random_state = random_state
         if self.randomize:
+            random.seed(self.random_state)
             random.shuffle(self.files)
 
         # * Build dataset dictionary
@@ -139,7 +142,7 @@ class TerrainDataset(Dataset):
         # * Dataset state
         self.current_file = None
         self.current_blocks = None
-        self.idx_offset = 0
+        self.idx_offset = idx_offset
 
     def get_len(self):
         key = list(self.sample_dict.keys())[-1]
@@ -157,7 +160,7 @@ class TerrainDataset(Dataset):
                 break
             else:
                 self.idx_offset += 1
-        return target, mask, file_name
+        return target, mask, file_name, self.idx_offset
 
     def __internal_getitem__(self, idx):
         """

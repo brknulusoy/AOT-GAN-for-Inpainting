@@ -15,6 +15,7 @@ def create_loader(args):
         dataset_type="train",
         randomize=True,
         block_variance=1,
+        idx_offset=args.idx_offset
     )
     data_loader = DataLoader(
         dataset,
