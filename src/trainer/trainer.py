@@ -1,4 +1,5 @@
 import os
+import wandb
 import importlib
 from tqdm import tqdm
 from glob import glob
@@ -47,6 +48,8 @@ class Trainer():
             self.netD = DDP(self.netD, device_ids= [args.local_rank], output_device=[args.local_rank])
         
         if args.tensorboard: 
+            wandb.tensorboard.patch(root_logdir=os.path.join(args.save_dir, 'log'), pytorch=True)
+            wandb.init(project="tds-aotgan")
             self.writer = SummaryWriter(os.path.join(args.save_dir, 'log'))
             
 
