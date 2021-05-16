@@ -152,11 +152,11 @@ class Trainer():
                     if self.args.tensorboard: 
                         self.writer.add_scalar(key, val.item(), self.iteration)
                 pbar.set_description((description))
-                if self.args.tensorboard: 
-                    self.writer.add_image('mask', make_grid(masks), self.iteration)
-                    self.writer.add_image('orig', make_grid((images+1.0)/2.0), self.iteration)
-                    self.writer.add_image('pred', make_grid((pred_img+1.0)/2.0), self.iteration)
-                    self.writer.add_image('comp', make_grid((comp_img+1.0)/2.0), self.iteration)
+                if self.args.tensorboard:
+                    self.writer.add_image('mask', make_grid(masks, normalize=True), self.iteration)
+                    self.writer.add_image('orig', make_grid((images+1.0)/2.0, normalize=True), self.iteration)
+                    self.writer.add_image('pred', make_grid((pred_img+1.0)/2.0, normalize=True), self.iteration)
+                    self.writer.add_image('comp', make_grid((comp_img+1.0)/2.0, normalize=True), self.iteration)
                     
             
             if self.args.global_rank == 0 and (self.iteration % self.args.save_every) == 0: 
