@@ -28,28 +28,34 @@ def compare_psnr(pairs):
 
 def compare_ssim(pairs):
     real, fake = pairs
-    return structural_similarity(real, fake, multichannel=True)
+    return structural_similarity(real, fake, multichannel=False)
 
 # ================================
 
-def mae(reals, fakes, num_worker=8):
+def mae(reals, fakes, num_worker=8, no_tqdm=False):
+    if num_worker == 1:
+        return compare_mae((reals, fakes))
     error = 0
     pool = Pool(num_worker)
-    for val in tqdm(pool.imap_unordered(compare_mae, zip(reals, fakes)), total=len(reals), desc='compare_mae'):
+    for val in tqdm(pool.imap_unordered(compare_mae, zip(reals, fakes)), total=len(reals), desc='compare_mae', disable=no_tqdm):
         error += val 
     return error / len(reals)
 
-def psnr(reals, fakes, num_worker=8):
+def psnr(reals, fakes, num_worker=8, no_tqdm=False):
+    if num_worker == 1:
+        return compare_psnr((reals, fakes))
     error = 0
     pool = Pool(num_worker)
-    for val in tqdm(pool.imap_unordered(compare_psnr, zip(reals, fakes)), total=len(reals), desc='compare_psnr'):
+    for val in tqdm(pool.imap_unordered(compare_psnr, zip(reals, fakes)), total=len(reals), desc='compare_psnr', disable=no_tqdm):
         error += val
     return error / len(reals)
 
-def ssim(reals, fakes, num_worker=8):
+def ssim(reals, fakes, num_worker=8, no_tqdm=False):
+    if num_worker == 1:
+        return compare_ssim((reals, fakes))
     error = 0
     pool = Pool(num_worker)
-    for val in tqdm(pool.imap_unordered(compare_ssim, zip(reals, fakes)), total=len(reals), desc='compare_ssim'):
+    for val in tqdm(pool.imap_unordered(compare_ssim, zip(reals, fakes)), total=len(reals), desc='compare_ssim', disable=no_tqdm):
         error += val
     return error / len(reals)
 

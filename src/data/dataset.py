@@ -62,6 +62,7 @@ class TerrainDataset(Dataset):
         usable_portion=1.0,
         fast_load=False,
         idx_offset=0,
+        no_tqdm=False,
         transform=None,
     ):
         """
@@ -78,6 +79,7 @@ class TerrainDataset(Dataset):
         usable_portion -> What % of the data will be used
         fast_load -> initialize from npy file, Warning: Dragons be aware
         idx_offset -> number of images to skip (because of empty masks)
+        no_tqdm -> Disable tqdm progress
         transform -> if there is any, PyTorch Transforms
         """
         np.seterr(divide="ignore", invalid="ignore")
@@ -107,7 +109,7 @@ class TerrainDataset(Dataset):
         # * Build dataset dictionary
         self.sample_dict = dict()
         start = 0
-        for file in tqdm(self.files, ncols=100, disable=fast_load):
+        for file in tqdm(self.files, ncols=100, disable=fast_load or no_tqdm):
             blocks, mask = self.get_blocks(file, return_mask=True)
 
             if len(blocks) == 0:

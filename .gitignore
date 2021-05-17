@@ -2,6 +2,7 @@ __pycache__
 *.pt 
 *.txt 
 *.png
+*.npy
 events.* 
 outputs
 wandb/

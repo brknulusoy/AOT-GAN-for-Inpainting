@@ -1,48 +1,107 @@
-import argparse
+import os
+import torch
+import importlib
 import numpy as np
 from tqdm import tqdm
 from glob import glob
-from PIL import Image
-from multiprocessing import Pool
 
+import matplotlib.pyplot as plt
+
+from utils.option import args
+from data import create_loader
 from metric import metric as module_metric
 
-parser = argparse.ArgumentParser(description='Image Inpainting')
-parser.add_argument('--real_dir', required=True, type=str)
-parser.add_argument('--fake_dir', required=True, type=str)
-parser.add_argument("--metric", type=str, nargs="+")
-args = parser.parse_args()
+
+MODELS = glob(os.path.join(args.pre_train, "*.pt"))
 
 
-def read_img(name_pair): 
-    rname, fname = name_pair
-    rimg = Image.open(rname)
-    fimg = Image.open(fname)
-    return np.array(rimg), np.array(fimg)
+def graph():
+    data = np.load(os.path.join(args.pre_train, "summary.npy"), allow_pickle=True)
+
+    names = []
+    datas = []
+
+    for model, model_data in zip(MODELS, data):
+        name = int(model.split("256/G")[1].split(".")[0])
+        block = []
+        for entry in model_data:
+            block.append([*entry.values()])
+        block = np.array(block)
+
+        names.append(name)
+        datas.append(block)
+    names = np.array(names)
+    datas = np.array(datas)
+    datas = np.swapaxes(datas, 2, 1)
+    datas = np.mean(datas, axis=2)
+
+    datas[:, 0] *= 1.0 / datas[:, 0].max()
+    datas[:, 1] *= 1.0 / datas[:, 1].max()
+    datas[:, 2] *= 1.0 / datas[:, 2].max()
+
+    _indsorted = names.argsort()
+    datas = datas[_indsorted[::-1]]
+
+    m1, m2, m3 = 1, 1, 1
+    quality = (m1 * (1 - datas[:, 0]) + m2 * datas[:, 1] + m3 * datas[:, 2]) / 3
+
+    fig, axs = plt.subplots(2, 2, figsize=(12, 12), sharex=True)
+
+    axs[0, 0].plot(datas[:, 0], c="red")
+    axs[0, 1].plot(datas[:, 1], c="red")
+    axs[1, 0].plot(datas[:, 2], c="red")
+    axs[1, 1].plot(quality, c="green")
+
+    fig.tight_layout()
+    plt.savefig(os.path.join(args.pre_train, "summary.png"))
+    plt.show()
 
 
-def main(num_worker=8):
+def main():
+    args.world_size = 1
 
-    real_names = sorted(list(glob(f'{args.real_dir}/*.png')))
-    fake_names = sorted(list(glob(f'{args.fake_dir}/*.png')))
-    print(f'real images: {len(real_names)}, fake images: {len(fake_names)}')
-    real_images = []
-    fake_images = []
-    pool = Pool(num_worker)
-    for rimg, fimg in tqdm(pool.imap_unordered(read_img, zip(real_names, fake_names)), total=len(real_names), desc='loading images'):
-        real_images.append(rimg)
-        fake_images.append(fimg)
+    data = []
+
+    for model_name in tqdm(MODELS, position=1):
+        data_loader = create_loader(args)
+        name = model_name.split("pconv256/")[1].split(".")[0]
+
+        # Model and version
+        net = importlib.import_module("model." + args.model)
+        model = net.InpaintGenerator(args).cuda()
+        model.load_state_dict(torch.load(model_name))
+        model.eval()
+
+        results = []
+        for i in tqdm(range(args.iterations), position=2):
+            target, mask, _, _ = next(data_loader)
+            target = target.cuda()
+            mask = mask.cuda()
+
+            with torch.no_grad():
+                masked_tensor = (target * (1 - mask).float()) + mask
+                pred_tensor = model(masked_tensor, mask)
+                comp_tensor = pred_tensor * mask + target * (1 - mask)
+
+                # metrics prepare for image assesments
+                metrics = {
+                    met: getattr(module_metric, met) for met in ["mae", "psnr", "ssim"]
+                }
+                evaluation_scores = {key: 0 for key, val in metrics.items()}
+                for key, val in metrics.items():
+                    evaluation_scores[key] = val(
+                        target.cpu().numpy().reshape((256, 256)),
+                        comp_tensor.cpu().numpy().reshape((256, 256)),
+                        num_worker=1,
+                        no_tqdm=True,
+                    )
+                results.append(evaluation_scores)
+        data.append(results)
+
+    data = np.array(data)
+    np.save(os.path.join(args.pre_train, "summary"), data)
+    print(data)
 
 
-    # metrics prepare for image assesments
-    metrics = {met: getattr(module_metric, met) for met in args.metric}
-    evaluation_scores = {key: 0 for key,val in metrics.items()}
-    for key, val in metrics.items():
-        evaluation_scores[key] = val(real_images, fake_images, num_worker=num_worker)
-    print(' '.join(['{}: {:6f},'.format(key, val) for key,val in evaluation_scores.items()]))
-  
-  
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    graph()

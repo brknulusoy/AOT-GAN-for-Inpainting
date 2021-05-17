@@ -43,8 +43,8 @@ def demo(args):
             evaluation_scores = {key: 0 for key, val in metrics.items()}
             for key, val in metrics.items():
                 evaluation_scores[key] = val(
-                    target.numpy().reshape((1, 256, 256)),
-                    comp_tensor.numpy().reshape((1, 256, 256)),
+                    target.numpy().reshape((256, 256)),
+                    comp_tensor.numpy().reshape((256, 256)),
                     num_worker=1,
                 )
 
@@ -55,11 +55,13 @@ def demo(args):
             masked = np.copy(target.numpy())
             masked[mask == 1] = np.nan
             comp_tensor = comp_tensor.reshape((256, 256))
-
-            axs[0, 0].contourf(target.numpy(), levels=100, cmap="terrain")
-            axs[0, 1].contourf(mask.numpy(), levels=100, cmap="gray")
-            axs[1, 0].contourf(masked, levels=100, cmap="terrain")
-            axs[1, 1].contourf(comp_tensor.numpy(), levels=100, cmap="terrain")
+            
+            target = target.numpy()
+            levels = np.arange(target.min(), target.max(), (target.max() - target.min()) / 100)
+            axs[0, 0].contourf(target, levels=levels, cmap="terrain")
+            axs[0, 1].contourf(mask.numpy(), cmap="gray")
+            axs[1, 0].contourf(masked, levels=levels, cmap="terrain")
+            axs[1, 1].contourf(comp_tensor.numpy(), levels=levels, cmap="terrain")
 
             fig.tight_layout(rect=[0, 0.03, 1, 0.95])
             fig.suptitle(
