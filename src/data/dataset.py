@@ -54,6 +54,7 @@ class TerrainDataset(Dataset):
         patch_size=30,
         sample_size=256,
         observer_pad=50,
+        block_dimension=4,
         block_variance=4,
         observer_height=0.75,
         limit_samples=None,
@@ -71,6 +72,7 @@ class TerrainDataset(Dataset):
         patch_size -> the 1m^2 area to read from .TIF
         sample_size -> the 0.1m^2 res area to be trained sample size
         observer_pad -> n pixels to pad before getting a random observer
+        block_dimension -> Number of masks (motion step) for each submap
         block_variance -> how many different observer points
         observer_height -> Observer Height
         limit_samples -> Limit number of samples returned
@@ -90,6 +92,7 @@ class TerrainDataset(Dataset):
         self.sample_size = sample_size
         self.block_variance = block_variance
         self.observer_pad = observer_pad
+        self.block_dimension = block_dimension
 
         # * PyTorch Related Variables
         self.transform = transform
@@ -144,7 +147,6 @@ class TerrainDataset(Dataset):
         # * Dataset state
         self.current_file = None
         self.current_blocks = None
-        self.idx_offset = idx_offset
 
     def get_len(self):
         key = list(self.sample_dict.keys())[-1]
@@ -156,13 +158,17 @@ class TerrainDataset(Dataset):
         return self.get_len()
 
     def __getitem__(self, idx):
-        while True:
-            target, mask, file_name = self.__internal_getitem__(idx + self.idx_offset)
-            if not np.all(mask.numpy() == 0):
-                break
+        targets, masks = None, None
+        for i in range(self.block_dimension):
+            target, mask = self.__internal_getitem__(idx)
+            if i == 0:
+                targets = target
+                masks = mask
             else:
-                self.idx_offset += 1
-        return target, mask, file_name, self.idx_offset
+                targets = np.vstack((targets, target))
+                masks = np.vstack((masks, mask))
+
+        return targets, masks
 
     def __internal_getitem__(self, idx):
         """
@@ -193,11 +199,12 @@ class TerrainDataset(Dataset):
         target = torch.from_numpy(adjusted).float()
         target = target.unsqueeze(0)
 
-        return target, mask, f"{self.current_file}-{idx}"
+        return target, mask
 
     def viewshed(self, dem, oh, seed):
+        # TODO: Better observer location and consecutive masks implementing a motion
         h, w = dem.shape
-        np.random.seed(seed + self.random_state)
+        # np.random.seed(seed + self.random_state)
         rands = np.random.rand(h - self.observer_pad, w - self.observer_pad)
         template = np.zeros_like(dem)
         template[

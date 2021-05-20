@@ -11,6 +11,8 @@ parser.add_argument('--data_test', type=str, default='tds',
                     help='dataname used for testing')
 parser.add_argument('--image_size', type=int, default=256,
                     help='image size used during training')
+parser.add_argument('--block_dimension', type=int, default=4,
+                    help='block dimension for each input submap')
 parser.add_argument('--mask_type', type=str, default='pconv',
                     help='mask used during training')
 

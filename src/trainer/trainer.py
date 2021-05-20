@@ -41,11 +41,16 @@ class Trainer():
         self.netD = net.Discriminator().cuda()
         self.optimD = torch.optim.Adam(
             self.netD.parameters(), lr=args.lrd, betas=(args.beta1, args.beta2))
+
+        self.netT = net.SNTemporal(1).cuda()
+        self.optimT = torch.optim.Adam(
+            self.netT.parameters(), lr=args.lrd, betas=(args.beta1, args.beta2))
         
         self.load()
         if args.distributed:
             self.netG = DDP(self.netG, device_ids= [args.local_rank], output_device=[args.local_rank])
             self.netD = DDP(self.netD, device_ids= [args.local_rank], output_device=[args.local_rank])
+            self.netT = DDP(self.netT, device_ids= [args.local_rank], output_device=[args.local_rank])
         
         if args.tensorboard: 
             wandb.tensorboard.patch(root_logdir=os.path.join(args.save_dir, 'log'), pytorch=True)
@@ -70,12 +75,21 @@ class Trainer():
                 print(f'[**] Loading discriminator network from {dpath}')
         except: 
             pass
+
+        try: 
+            tpath = sorted(list(glob(os.path.join(self.args.save_dir, 'T*.pt'))))[-1]
+            self.netT.load_state_dict(torch.load(dpath, map_location='cuda'))
+            if self.args.global_rank == 0: 
+                print(f'[**] Loading temporal stability network from {tpath}')
+        except: 
+            pass
         
         try: 
             opath = sorted(list(glob(os.path.join(self.args.save_dir, 'O*.pt'))))[-1]
             data = torch.load(opath, map_location='cuda')
             self.optimG.load_state_dict(data['optimG'])
             self.optimD.load_state_dict(data['optimD'])
+            self.optimT.load_state_dict(data['optimT'])
             if self.args.global_rank == 0: 
                 print(f'[**] Loading optimizer from {opath}')
         except: 
@@ -90,13 +104,18 @@ class Trainer():
                     os.path.join(self.args.save_dir, f'G{str(self.iteration).zfill(7)}.pt'))
                 torch.save(self.netD.module.state_dict(), 
                     os.path.join(self.args.save_dir, f'D{str(self.iteration).zfill(7)}.pt'))
+                torch.save(self.netT.module.state_dict(), 
+                    os.path.join(self.args.save_dir, f'T{str(self.iteration).zfill(7)}.pt'))
             else:
                 torch.save(self.netG.state_dict(), 
                     os.path.join(self.args.save_dir, f'G{str(self.iteration).zfill(7)}.pt'))
                 torch.save(self.netD.state_dict(), 
                     os.path.join(self.args.save_dir, f'D{str(self.iteration).zfill(7)}.pt'))
+                torch.save(self.netT.state_dict(), 
+                    os.path.join(self.args.save_dir, f'T{str(self.iteration).zfill(7)}.pt'))
             torch.save(
-                {'optimG': self.optimG.state_dict(), 'optimD': self.optimD.state_dict()}, 
+                {'optimG': self.optimG.state_dict(), 'optimD': self.optimD.state_dict(),
+                 'optimT': self.optimT.state_dict()}, 
                 os.path.join(self.args.save_dir, f'O{str(self.iteration).zfill(7)}.pt'))
             
 
@@ -108,7 +127,7 @@ class Trainer():
         
         for idx in pbar:
             self.iteration += 1
-            images, masks, filename, offset = next(self.dataloader)
+            images, masks = next(self.dataloader)
             images, masks = images.cuda(), masks.cuda()
             images_masked = (images * (1 - masks).float()) + masks
 
@@ -116,27 +135,50 @@ class Trainer():
                 timer_data.hold()
                 timer_model.tic()
 
-            # in: [rgb(3) + edge(1)]
-            pred_img = self.netG(images_masked, masks)
-            comp_img = (1 - masks) * images + masks * pred_img
+            # Initialize losses
+            losses = {"advg": 0}
+            dis_loss_cum = 0
+            for name in self.args.rec_loss.keys():
+                losses[name] = 0
 
-            # reconstruction losses 
-            losses = {}
-            for name, weight in self.args.rec_loss.items(): 
-                losses[name] = weight * self.rec_loss_func[name](pred_img, images)
-            
-            # adversarial loss 
-            dis_loss, gen_loss = self.adv_loss(self.netD, comp_img, images, masks)
-            losses[f"advg"] = gen_loss * self.args.adv_weight
+            comps = None
+            for dimension in range(self.args.block_dimension):
+                s_image = images[0, dimension].unsqueeze(0).unsqueeze(0)
+                s_image_masked = images_masked[0, dimension].unsqueeze(0).unsqueeze(0)
+                s_mask = masks[0, dimension].unsqueeze(0).unsqueeze(0)
+
+                # in: [elev(1) + edge(1)]
+                pred_img = self.netG(s_image_masked, s_mask)
+                comp_img = (1 - s_mask) * s_image + s_mask * pred_img
+
+                if comps is None:
+                    comps = comp_img
+                else:
+                    comps = torch.cat((comps, comp_img), 0)
+
+                # reconstruction losses
+                for name, weight in self.args.rec_loss.items(): 
+                    losses[name] += weight * self.rec_loss_func[name](pred_img, s_image) / self.args.block_dimension
+
+                # adversarial loss 
+                dis_loss, gen_loss = self.adv_loss(self.netD, comp_img, s_image, s_mask)
+                losses[f"advg"] += gen_loss * self.args.adv_weight / self.args.block_dimension
+                dis_loss_cum += dis_loss / self.args.block_dimension
+
+            # temporal losses
+            comps = comps.unsqueeze(1)
+            losses["temporal"] = self.netT(comps)
             
             # backforward 
             self.optimG.zero_grad()
             self.optimD.zero_grad()
+            self.optimT.zero_grad()
             sum(losses.values()).backward()
-            losses[f"advd"] = dis_loss 
-            dis_loss.backward()
+            losses[f"advd"] = dis_loss_cum 
+            dis_loss_cum.backward()
             self.optimG.step()
             self.optimD.step()
+            self.optimT.step()
 
             if self.args.global_rank == 0:
                 timer_model.hold()
@@ -161,6 +203,4 @@ class Trainer():
             
             if self.args.global_rank == 0 and (self.iteration % self.args.save_every) == 0: 
                 self.save()
-                print(f"idx_offset is {offset}")
-
 

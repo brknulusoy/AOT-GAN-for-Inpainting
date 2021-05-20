@@ -1,4 +1,5 @@
 from .dataset import TerrainDataset
+from math import ceil
 
 from torch.utils.data import DataLoader
 
@@ -15,7 +16,12 @@ def create_loader(args):
         dataset_type="train",
         randomize=True,
         block_variance=1,
-        idx_offset=args.idx_offset
+        block_dimension=args.block_dimension,
+        idx_offset=args.idx_offset,
+        observer_height=0.3, # TODO
+        patch_size=ceil(args.image_size / 100) * 10,
+        sample_size=args.image_size,
+        observer_pad=args.image_size // 4,
     )
     data_loader = DataLoader(
         dataset,
