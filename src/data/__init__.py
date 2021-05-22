@@ -17,8 +17,7 @@ def create_loader(args):
         randomize=True,
         block_variance=1,
         block_dimension=args.block_dimension,
-        idx_offset=args.idx_offset,
-        observer_height=0.3, # TODO
+        observer_height=0.75,
         patch_size=ceil(args.image_size / 100) * 10,
         sample_size=args.image_size,
         observer_pad=args.image_size // 4,

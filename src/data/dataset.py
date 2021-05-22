@@ -1,13 +1,135 @@
-import rasterio
+import os
+import math
 import torch
-from scipy.ndimage import zoom
-from skimage.draw import rectangle_perimeter, line
-from torch.utils.data import Dataset
-from tqdm import tqdm
-import numpy as np
-from scipy import stats
-from glob import glob
 import random
+import pickle
+import hashlib
+import rasterio
+import numpy as np
+from glob import glob
+from tqdm import tqdm
+from scipy import stats
+from scipy.ndimage import zoom
+from torch.utils.data import Dataset
+from skimage.draw import rectangle_perimeter, line
+
+
+class Viewshed:
+    def __init__(
+        self,
+        observer_height=0.75,
+        observer_pad=50,
+        observer_steps=4,
+        observer_view_angle=120,
+        data_range=None,
+        random_state=42,
+    ):
+        self.observer_height = observer_height / data_range
+        self.observer_pad = observer_pad
+        self.observer_steps = observer_steps
+        self.observer_view_angle = observer_view_angle
+        self.random_state = random_state
+
+    def get_poi(self, dem):
+        h, w = dem.shape
+        center = dem[
+            self.observer_pad - self.observer_pad // 2 : h - self.observer_pad // 2,
+            self.observer_pad - self.observer_pad // 2 : w - self.observer_pad // 2,
+        ]
+
+        # * Find maximum point and furthest point
+        max = np.unravel_index(np.argmax(center, axis=None), center.shape)
+        pad = 0
+        furthest = (
+            h - pad if max[0] < h // 2 else pad,
+            w - pad if max[1] < w // 2 else pad,
+        )
+
+        # * Draw a line and subdivide it
+        ys, xs = line(*max, *furthest)
+        comb = np.hstack((ys.reshape(-1, 1), xs.reshape(-1, 1)))[: h // 2]
+        steps = np.linspace(
+            0, len(comb), num=self.observer_steps, endpoint=False, dtype=int
+        )
+        steps = np.take(comb, steps, axis=0)
+
+        # * Find the starting point and movement angle
+        dist1 = ((steps[0, 0] - h // 2) ** 2 + (steps[0, 1] - w // 2) ** 2) ** 0.5
+        dist2 = ((steps[-1, 0] - h // 2) ** 2 + (steps[-1, 1] - w // 2) ** 2) ** 0.5
+
+        if dist1 < dist2:
+            steps = steps[::-1]
+
+        angle = math.atan2(steps[-1, 0] - steps[0, 0], steps[-1, 1] - steps[0, 1])
+        return np.hstack((steps, np.array([angle] * len(steps)).reshape(-1, 1)))
+
+    def process(self, dem, observer):
+        yp, xp, angle = observer
+        zp = dem[yp, xp] + self.observer_height
+        viewshed = np.copy(dem)
+
+        atan2deg = lambda x: (x if x >= 0 else (2 * math.pi) + x) * 360 / (2 * math.pi)
+
+        def is_within(x, look, thres):
+            flag = look < thres / 2 or look > 360 - thres / 2
+
+            if not flag:
+                return (look - (thres / 2)) <= x <= look + (thres / 2)
+            else:
+                l = look - thres / 2
+                u = look + thres / 2
+
+                if 360 > u >= 0 and x >= 0:
+                    return (x <= u and x < 180) or (x > 180 and x > l % 360)
+                else:
+                    return (x >= l and x > 180) or (x < 180 and x < u % 360)
+
+        # * Find perimiter
+        h, w = dem.shape
+        rr, cc = rectangle_perimeter((1, 1), end=(h - 2, w - 2), shape=dem.shape)
+
+        # * Iterate through perimiter
+        for yc, xc in zip(rr, cc):
+            # * Form the line
+            ray_y, ray_x = line(yp, xp, yc, xc)
+            ray_z = dem[ray_y, ray_x]
+
+            # * Check if line in sight
+            line_angle = atan2deg(math.atan2(yc - yp, xc - xp))
+            look_angle = atan2deg(angle)
+
+            if not is_within(line_angle, look_angle, self.observer_view_angle):
+                viewshed[ray_y, ray_x] = np.nan
+                continue
+
+            m = (ray_z - zp) / np.hypot(ray_y - yp, ray_x - xp)
+
+            max_so_far = -np.inf
+            for yi, xi, mi in zip(ray_y, ray_x, m):
+                if mi < max_so_far:
+                    viewshed[yi, xi] = np.nan
+                else:
+                    max_so_far = mi
+
+        return viewshed
+
+    def __call__(self, dem):
+        IMAGE_SIZE = dem.shape[-1]
+        # * Start by finding places of interest
+        ref = Helper.get_slopes(
+            dem.reshape(1, IMAGE_SIZE, IMAGE_SIZE), n=2, only_map=True
+        )
+        steps = self.get_poi(ref.reshape(IMAGE_SIZE, IMAGE_SIZE))
+
+        # * Then move the observer but each viewshed will accumulate
+        viewsheds = []
+        for i, (yp, xp, ang) in enumerate(steps):
+            viewshed = self.process(dem, (int(yp), int(xp), ang))
+            if i > 0:
+                viewshed[np.isnan(viewshed)] = viewsheds[-1][np.isnan(viewshed)]
+            viewsheds.append(viewshed)
+
+        return viewsheds
 
 
 class Helper:
@@ -21,27 +143,46 @@ class Helper:
         return bmax - bmin
 
     @staticmethod
-    def get_tri(x):
-        return np.apply_along_axis(Helper._get_tri, 1, x.reshape(-1, x.shape[2] ** 2))
+    def get_percentage(x, of):
+        side = x.shape[2] ** 2
+        mins = np.min(x.reshape(-1, side), axis=1).reshape(-1, 1)
+        return (
+            np.count_nonzero(
+                (x.reshape(-1, side) - np.repeat(mins, side, axis=1)) > of,
+                axis=1,
+            )
+            / side
+        )
 
     @staticmethod
-    def _get_tri(x):
-        now = x.reshape(-1, 30)
-        tri = np.zeros_like(now)
+    def get_skews(x):
+        return stats.skew(x.reshape(-1, x.shape[2] ** 2), axis=1)
 
-        d = 1
-        for i in range(1, 29):
-            for j in range(1, 29):
-                tri[i, j] = np.sqrt(
-                    np.sum(
-                        np.power(
-                            now[i - d : i + d + 1, j - d : j + d + 1].flatten()
-                            - now[i, j],
-                            2,
-                        )
-                    )
-                )
-        return stats.trim_mean(tri.flatten(), 0.2)
+    @staticmethod
+    def get_slopes(x, n=1, only_map=False):
+        SH = x.shape[-1]
+
+        _x = np.copy(x)
+        _x[:, 1::2, :] = _x[:, 1::2, ::-1]
+        xax = np.abs(np.diff(_x.reshape(-1, SH ** 2), n=n, axis=1))
+
+        _y = np.copy(np.swapaxes(x, 1, 2))
+        _y[:, 1::2, :] = _y[:, 1::2, ::-1]
+        yax = np.abs(np.diff(_y.reshape(-1, SH ** 2), n=n, axis=1))
+
+        nan_block = np.array([np.nan] * x.shape[0] * n).reshape(-1, n)
+
+        xax = (np.concatenate((xax, nan_block), axis=1)).reshape(-1, SH, SH)
+        xax[:, 1::2, :] = xax[:, 1::2, ::-1]
+
+        yax = (np.concatenate((yax, nan_block), axis=1)).reshape(-1, SH, SH)
+        yax[:, 1::2, :] = yax[:, 1::2, ::-1]
+        yax = np.swapaxes(yax, 1, 2)
+
+        zax = xax + yax
+        if only_map:
+            return zax
+        return zax, np.nanmedian(zax.reshape(-1, SH ** 2), axis=1)
 
 
 class TerrainDataset(Dataset):
@@ -59,10 +200,8 @@ class TerrainDataset(Dataset):
         observer_height=0.75,
         limit_samples=None,
         randomize=True,
-        random_state=42,
+        random_state=None,
         usable_portion=1.0,
-        fast_load=False,
-        idx_offset=0,
         no_tqdm=False,
         transform=None,
     ):
@@ -79,15 +218,12 @@ class TerrainDataset(Dataset):
         randomize -> predictable randomize
         random_state -> a value that gets added to seed
         usable_portion -> What % of the data will be used
-        fast_load -> initialize from npy file, Warning: Dragons be aware
-        idx_offset -> number of images to skip (because of empty masks)
         no_tqdm -> Disable tqdm progress
         transform -> if there is any, PyTorch Transforms
         """
         np.seterr(divide="ignore", invalid="ignore")
 
         # * Set Dataset attributes
-        self.observer_height = observer_height
         self.patch_size = patch_size
         self.sample_size = sample_size
         self.block_variance = block_variance
@@ -103,34 +239,40 @@ class TerrainDataset(Dataset):
         self.usable_portion = usable_portion
         self.limit_samples = limit_samples
 
-        self.randomize = False if fast_load else randomize
-        self.random_state = random_state
+        self.randomize = randomize
+        self.random_state = (
+            random.randint(0, 100) if random_state is None else random_state
+        )
         if self.randomize:
             random.seed(self.random_state)
             random.shuffle(self.files)
 
         # * Build dataset dictionary
-        self.sample_dict = dict()
-        start = 0
-        for file in tqdm(self.files, ncols=100, disable=fast_load or no_tqdm):
-            blocks, mask = self.get_blocks(file, return_mask=True)
+        cache_name = f"tmp/TDSDATA-RS{self.random_state}-{hashlib.md5((''.join(sorted(self.files))).encode()).hexdigest()}"
+        if os.path.exists(cache_name):
+            self.sample_dict = pickle.load(open(cache_name, "rb"))
+        else:
+            self.sample_dict = dict()
+            start = 0
+            for file in tqdm(self.files, ncols=100, disable=no_tqdm):
+                blocks, mask = self.get_blocks(file, return_mask=True)
 
-            if len(blocks) == 0:
-                continue
+                if len(blocks[mask]) == 0:
+                    print(f"Skipped file {file}")
+                    continue
 
-            self.sample_dict[file] = {
-                "start": start,
-                "end": start + len(blocks[mask]),
-                "mask": mask,
-                "min": np.min(blocks[mask]),
-                "max": np.max(blocks[mask]),
-                "range": np.max(Helper.get_ranges(blocks[mask])),
-            }
-            start += len(blocks[mask])
+                self.sample_dict[file] = {
+                    "start": start,
+                    "end": start + len(blocks[mask]),
+                    "mask": mask,
+                    "min": np.min(blocks[mask]),
+                    "max": np.max(blocks[mask]),
+                    "range": np.max(Helper.get_ranges(blocks[mask])),
+                }
+                start += len(blocks[mask])
+                del blocks
 
-            del blocks
-            if fast_load:
-                break
+            pickle.dump(self.sample_dict, open(cache_name, "wb"))
 
         self.data_min = min(self.sample_dict.values(), key=lambda x: x["min"])["min"]
         self.data_max = max(self.sample_dict.values(), key=lambda x: x["max"])["max"]
@@ -143,6 +285,15 @@ class TerrainDataset(Dataset):
             assert (
                 limit_samples <= self.get_len()
             ), "limit_samples cannot be bigger than dataset size"
+
+        # * Viewshed Engine
+        self.viewshed = Viewshed(
+            observer_height=observer_height,
+            observer_pad=self.observer_pad,
+            observer_steps=self.block_dimension,
+            data_range=self.data_range,
+            random_state=self.random_state,
+        )
 
         # * Dataset state
         self.current_file = None
@@ -158,22 +309,6 @@ class TerrainDataset(Dataset):
         return self.get_len()
 
     def __getitem__(self, idx):
-        targets, masks = None, None
-        for i in range(self.block_dimension):
-            target, mask = self.__internal_getitem__(idx)
-            if i == 0:
-                targets = target
-                masks = mask
-            else:
-                targets = np.vstack((targets, target))
-                masks = np.vstack((masks, mask))
-
-        return targets, masks
-
-    def __internal_getitem__(self, idx):
-        """
-        returns (x, (ox, oy, oz)), y
-        """
         rel_idx = None
         for file, info in self.sample_dict.items():
             if idx >= info["start"] and idx < info["end"]:
@@ -187,56 +322,19 @@ class TerrainDataset(Dataset):
         current = np.copy(self.current_blocks[rel_idx])
         current -= np.min(current)
         current /= self.data_range
-        oh = self.observer_height / self.data_range
 
         adjusted = self.get_adjusted(current)
-        viewshed, _ = self.viewshed(adjusted, oh, idx)
-        mask = np.isnan(viewshed).astype(np.uint8)
+        viewshed = self.viewshed(adjusted)
 
+        mask = np.isnan(viewshed).astype(np.uint8)
         mask = torch.from_numpy(mask).float()
         mask = mask.unsqueeze(0)
 
+        target = np.array([adjusted] * self.block_dimension)
         target = torch.from_numpy(adjusted).float()
         target = target.unsqueeze(0)
 
         return target, mask
-
-    def viewshed(self, dem, oh, seed):
-        # TODO: Better observer location and consecutive masks implementing a motion
-        h, w = dem.shape
-        # np.random.seed(seed + self.random_state)
-        rands = np.random.rand(h - self.observer_pad, w - self.observer_pad)
-        template = np.zeros_like(dem)
-        template[
-            self.observer_pad - self.observer_pad // 2 : h - self.observer_pad // 2,
-            self.observer_pad - self.observer_pad // 2 : w - self.observer_pad // 2,
-        ] = rands
-        observer = tuple(np.argwhere(template == np.max(template))[0])
-
-        yp, xp = observer
-        zp = dem[observer] + oh
-        observer = (xp, yp, zp)
-        viewshed = np.copy(dem)
-
-        # * Find perimiter
-        rr, cc = rectangle_perimeter((1, 1), end=(h - 2, w - 2), shape=dem.shape)
-
-        # * Iterate through perimiter
-        for yc, xc in zip(rr, cc):
-            # * Form the line
-            ray_y, ray_x = line(yp, xp, yc, xc)
-            ray_z = dem[ray_y, ray_x]
-
-            m = (ray_z - zp) / np.hypot(ray_y - yp, ray_x - xp)
-
-            max_so_far = -np.inf
-            for yi, xi, mi in zip(ray_y, ray_x, m):
-                if mi < max_so_far:
-                    viewshed[yi, xi] = np.nan
-                else:
-                    max_so_far = mi
-
-        return viewshed, observer
 
     def blockshaped(self, arr, nside):
         """
@@ -311,14 +409,25 @@ class TerrainDataset(Dataset):
         if return_mask:
             # * Further filter remeaning data in relation to z-score
             ranges = Helper.get_ranges(blocks)
-            mask_ru = np.abs(stats.zscore(ranges)) < 2
-            mask_rl = np.abs(stats.zscore(ranges)) > 0.2
+            mask = np.abs(stats.zscore(ranges)) < 2
+            mask &= np.abs(stats.zscore(ranges)) > 0.05
 
-            # # * Terrain Ruggedness Index
-            # tri = Helper.get_tri(blocks)
-            # mask_tu = np.abs(stats.zscore(tri)) < 2
-            # mask_tl = np.abs(stats.zscore(tri)) > 0.05
+            # * Eliminate unwanted ranges
+            mask &= ranges >= 1
+            mask &= ranges < 5
 
-            mask = mask_ru & mask_rl  # & mask_tu & mask_tl
+            #* Eliminate low terrains for observer
+            mask &= Helper.get_percentage(blocks, 1) > 0.2
+            mask &= Helper.get_percentage(blocks, 5) < 0.9
+
+            # * Eliminate blocks by skewness in relation to z-score
+            skews = Helper.get_skews(blocks)
+            mask &= np.abs(stats.zscore(skews)) < 1
+            mask &= np.abs(stats.zscore(skews)) > 0.1
+
+            # * Eliminate blocks by slopes in relation to z-score
+            _, slopes = Helper.get_slopes(blocks)
+            mask &= np.abs(stats.zscore(slopes)) > 0.5
+
             return blocks, mask
         return blocks
