@@ -240,11 +240,10 @@ class TerrainDataset(Dataset):
         self.limit_samples = limit_samples
 
         self.randomize = randomize
-        self.random_state = 42
+        self.random_state = (
+            random.randint(0, 100) if random_state is None else random_state
+        )
         if self.randomize:
-            self.random_state = (
-                random.randint(0, 100) if random_state is None else random_state
-            )
             random.seed(self.random_state)
             random.shuffle(self.files)
 
