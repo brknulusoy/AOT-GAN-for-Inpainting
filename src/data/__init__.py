@@ -16,6 +16,7 @@ def create_loader(args):
         dataset_type="train",
         randomize=True,
         block_variance=1,
+        random_state=42,
         block_dimension=args.block_dimension,
         observer_height=0.75,
         patch_size=ceil(args.image_size / 100) * 10,

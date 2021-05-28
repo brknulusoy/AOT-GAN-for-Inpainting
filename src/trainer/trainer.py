@@ -42,15 +42,10 @@ class Trainer():
         self.optimD = torch.optim.Adam(
             self.netD.parameters(), lr=args.lrd, betas=(args.beta1, args.beta2))
 
-        self.netT = net.SNTemporal(1).cuda()
-        self.optimT = torch.optim.Adam(
-            self.netT.parameters(), lr=args.lrd, betas=(args.beta1, args.beta2))
-        
         self.load()
         if args.distributed:
             self.netG = DDP(self.netG, device_ids= [args.local_rank], output_device=[args.local_rank])
             self.netD = DDP(self.netD, device_ids= [args.local_rank], output_device=[args.local_rank])
-            self.netT = DDP(self.netT, device_ids= [args.local_rank], output_device=[args.local_rank])
         
         if args.tensorboard: 
             wandb.tensorboard.patch(root_logdir=os.path.join(args.save_dir, 'log'), pytorch=True)
@@ -77,19 +72,10 @@ class Trainer():
             pass
 
         try: 
-            tpath = sorted(list(glob(os.path.join(self.args.save_dir, 'T*.pt'))))[-1]
-            self.netT.load_state_dict(torch.load(dpath, map_location='cuda'))
-            if self.args.global_rank == 0: 
-                print(f'[**] Loading temporal stability network from {tpath}')
-        except: 
-            pass
-        
-        try: 
             opath = sorted(list(glob(os.path.join(self.args.save_dir, 'O*.pt'))))[-1]
             data = torch.load(opath, map_location='cuda')
             self.optimG.load_state_dict(data['optimG'])
             self.optimD.load_state_dict(data['optimD'])
-            self.optimT.load_state_dict(data['optimT'])
             if self.args.global_rank == 0: 
                 print(f'[**] Loading optimizer from {opath}')
         except: 
@@ -104,15 +90,11 @@ class Trainer():
                     os.path.join(self.args.save_dir, f'G{str(self.iteration).zfill(7)}.pt'))
                 torch.save(self.netD.module.state_dict(), 
                     os.path.join(self.args.save_dir, f'D{str(self.iteration).zfill(7)}.pt'))
-                torch.save(self.netT.module.state_dict(), 
-                    os.path.join(self.args.save_dir, f'T{str(self.iteration).zfill(7)}.pt'))
             else:
                 torch.save(self.netG.state_dict(), 
                     os.path.join(self.args.save_dir, f'G{str(self.iteration).zfill(7)}.pt'))
                 torch.save(self.netD.state_dict(), 
                     os.path.join(self.args.save_dir, f'D{str(self.iteration).zfill(7)}.pt'))
-                torch.save(self.netT.state_dict(), 
-                    os.path.join(self.args.save_dir, f'T{str(self.iteration).zfill(7)}.pt'))
             torch.save(
                 {'optimG': self.optimG.state_dict(), 'optimD': self.optimD.state_dict(),
                  'optimT': self.optimT.state_dict()}, 
@@ -154,7 +136,7 @@ class Trainer():
                 if comps is None:
                     comps = comp_img
                 else:
-                    comps = torch.cat((comps, comp_img), 0)
+                    comps = torch.cat((comps, comp_img), 1)
 
                 # reconstruction losses
                 for name, weight in self.args.rec_loss.items(): 
@@ -166,19 +148,16 @@ class Trainer():
                 dis_loss_cum += dis_loss / self.args.block_dimension
 
             # temporal losses
-            comps = comps.unsqueeze(1)
-            losses["temporal"] = self.netT(comps)
+            losses["temporal"] = torch.var(comps, axis=1).sum()
             
             # backforward 
             self.optimG.zero_grad()
             self.optimD.zero_grad()
-            self.optimT.zero_grad()
             sum(losses.values()).backward()
             losses[f"advd"] = dis_loss_cum 
             dis_loss_cum.backward()
             self.optimG.step()
             self.optimD.step()
-            self.optimT.step()
 
             if self.args.global_rank == 0:
                 timer_model.hold()
@@ -195,10 +174,10 @@ class Trainer():
                         self.writer.add_scalar(key, val.item(), self.iteration)
                 pbar.set_description((description))
                 if self.args.tensorboard:
-                    self.writer.add_image('mask', make_grid(masks, normalize=True), self.iteration)
-                    self.writer.add_image('orig', make_grid((images+1.0)/2.0, normalize=True), self.iteration)
-                    self.writer.add_image('pred', make_grid((pred_img+1.0)/2.0, normalize=True), self.iteration)
-                    self.writer.add_image('comp', make_grid((comp_img+1.0)/2.0, normalize=True), self.iteration)
+                    sw = lambda x: torch.transpose(x, 0, 1)
+                    self.writer.add_image('mask', make_grid(sw(masks), normalize=True), self.iteration)
+                    self.writer.add_image('orig', make_grid((sw(images)+1.0)/2.0, normalize=True), self.iteration)
+                    self.writer.add_image('comp', make_grid((sw(comps)+1.0)/2.0, normalize=True), self.iteration)
                     
             
             if self.args.global_rank == 0 and (self.iteration % self.args.save_every) == 0: 

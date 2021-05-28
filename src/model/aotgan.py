@@ -137,7 +137,7 @@ class SNTemporal(BaseModule):
 
         ######################
         # Convolution layers #
-        ######################""
+        ######################
         self.conv1 = self.ConvBlock(
             nc_in, nf * 1, kernel_size=(1, 5, 5), stride=(1, 2, 2),
             padding=1, bias=use_bias, norm=norm, conv_by=conv_by
