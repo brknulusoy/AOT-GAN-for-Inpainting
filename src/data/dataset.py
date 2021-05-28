@@ -240,15 +240,17 @@ class TerrainDataset(Dataset):
         self.limit_samples = limit_samples
 
         self.randomize = randomize
-        self.random_state = (
-            random.randint(0, 100) if random_state is None else random_state
-        )
+        self.random_state = 42
         if self.randomize:
+            self.random_state = (
+                random.randint(0, 100) if random_state is None else random_state
+            )
             random.seed(self.random_state)
             random.shuffle(self.files)
 
         # * Build dataset dictionary
-        cache_name = f"tmp/TDSDATA-RS{self.random_state}-{hashlib.md5((''.join(sorted(self.files))).encode()).hexdigest()}"
+        cache_name = os.path.dirname(__file__)
+        cache_name += f"/tmp/TDSDATA-RS{self.random_state}-{hashlib.md5((''.join(sorted(self.files))).encode()).hexdigest()}"
         if os.path.exists(cache_name):
             self.sample_dict = pickle.load(open(cache_name, "rb"))
         else:
@@ -328,11 +330,10 @@ class TerrainDataset(Dataset):
 
         mask = np.isnan(viewshed).astype(np.uint8)
         mask = torch.from_numpy(mask).float()
-        mask = mask.unsqueeze(0)
 
-        target = np.array([adjusted] * self.block_dimension)
-        target = torch.from_numpy(adjusted).float()
-        target = target.unsqueeze(0)
+        adjusted = np.expand_dims(adjusted, axis=0)
+        target = np.repeat(adjusted, self.block_dimension, axis=0)
+        target = torch.from_numpy(target).float()
 
         return target, mask
 
@@ -416,7 +417,7 @@ class TerrainDataset(Dataset):
             mask &= ranges >= 1
             mask &= ranges < 5
 
-            #* Eliminate low terrains for observer
+            # * Eliminate low terrains for observer
             mask &= Helper.get_percentage(blocks, 1) > 0.2
             mask &= Helper.get_percentage(blocks, 5) < 0.9
 
