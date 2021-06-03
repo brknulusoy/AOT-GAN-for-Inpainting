@@ -249,7 +249,10 @@ class TerrainDataset(Dataset):
 
         # * Build dataset dictionary
         cache_name = os.path.dirname(__file__)
-        cache_name += f"/tmp/TDSDATA-RS{self.random_state}-{hashlib.md5((''.join(sorted(self.files))).encode()).hexdigest()}"
+        cache_name += "/tmp/TDSDATA-"
+        cache_name += f"RS{self.random_state}-IS{self.sample_size}-"
+        cache_name += hashlib.md5((''.join(sorted(self.files))).encode()).hexdigest()
+
         if os.path.exists(cache_name):
             self.sample_dict = pickle.load(open(cache_name, "rb"))
         else:
@@ -329,10 +332,12 @@ class TerrainDataset(Dataset):
 
         mask = np.isnan(viewshed).astype(np.uint8)
         mask = torch.from_numpy(mask).float()
+        mask = mask.unsqueeze(1)
 
         adjusted = np.expand_dims(adjusted, axis=0)
         target = np.repeat(adjusted, self.block_dimension, axis=0)
         target = torch.from_numpy(target).float()
+        target = target.unsqueeze(1)
 
         return target, mask
 

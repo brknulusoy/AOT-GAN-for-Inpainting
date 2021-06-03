@@ -98,7 +98,15 @@ class Trainer():
             torch.save(
                 {'optimG': self.optimG.state_dict(), 'optimD': self.optimD.state_dict()}, 
                 os.path.join(self.args.save_dir, f'O{str(self.iteration).zfill(7)}.pt'))
-            
+
+    def _fix(self, x):
+        IS = x.shape[-1]
+        return x.reshape(self.args.block_dimension, 1, IS, IS)
+
+    def add_images(self, images, masks, comps):
+        self.writer.add_image('mask', make_grid(self._fix(masks), normalize=True), self.iteration)
+        self.writer.add_image('orig', make_grid((self._fix(images)+1.0)/2.0, normalize=True), self.iteration)
+        self.writer.add_image('comp', make_grid((self._fix(comps)+1.0)/2.0, normalize=True), self.iteration)  
 
     def train(self):
         pbar = range(self.iteration, self.args.iterations)
@@ -116,45 +124,36 @@ class Trainer():
                 timer_data.hold()
                 timer_model.tic()
 
-            # Initialize losses
-            losses = {"advg": 0}
-            dis_loss_cum = 0
-            for name in self.args.rec_loss.keys():
-                losses[name] = 0
+            pred_imgs = self.netG(images_masked, masks)
+            comp_imgs = (1 - masks) * images + masks * pred_imgs
 
-            comps = None
-            for dimension in range(self.args.block_dimension):
-                s_image = images[0, dimension].unsqueeze(0).unsqueeze(0)
-                s_image_masked = images_masked[0, dimension].unsqueeze(0).unsqueeze(0)
-                s_mask = masks[0, dimension].unsqueeze(0).unsqueeze(0)
+            # TODO: Convert to correct methods
+            IS = images.shape[-1]
+            images = images.reshape((1, 1, self.args.block_dimension * IS, IS))
+            masks = masks.reshape((1, 1, self.args.block_dimension * IS, IS))
+            pred_imgs = pred_imgs.reshape((1, 1, self.args.block_dimension * IS, IS))
+            comp_imgs = comp_imgs.reshape((1, 1, self.args.block_dimension * IS, IS))
 
-                # in: [elev(1) + edge(1)]
-                pred_img = self.netG(s_image_masked, s_mask)
-                comp_img = (1 - s_mask) * s_image + s_mask * pred_img
+            losses = {}
+            # reconstruction losses
+            for name, weight in self.args.rec_loss.items(): 
+                losses[name] = weight * self.rec_loss_func[name](pred_imgs, images)
 
-                if comps is None:
-                    comps = comp_img
-                else:
-                    comps = torch.cat((comps, comp_img), 1)
-
-                # reconstruction losses
-                for name, weight in self.args.rec_loss.items(): 
-                    losses[name] += weight * self.rec_loss_func[name](pred_img, s_image) / self.args.block_dimension
-
-                # adversarial loss 
-                dis_loss, gen_loss = self.adv_loss(self.netD, comp_img, s_image, s_mask)
-                losses[f"advg"] += gen_loss * self.args.adv_weight / self.args.block_dimension
-                dis_loss_cum += dis_loss / self.args.block_dimension
+            # adversarial loss 
+            dis_loss, gen_loss = self.adv_loss(self.netD, comp_imgs, images, masks)
+            losses[f"advg"] = gen_loss * self.args.adv_weight
 
             # temporal losses
-            losses["temporal"] = torch.var(comps, axis=1).sum()
+            # TODO: Convert to correct methods
+            comp_imgs = comp_imgs.reshape((1, self.args.block_dimension, 1, IS, IS))
+            losses["temporal"] = self.args.temp_weight * torch.var(comp_imgs, axis=1).sum()
             
             # backforward 
             self.optimG.zero_grad()
             self.optimD.zero_grad()
             sum(losses.values()).backward()
-            losses[f"advd"] = dis_loss_cum 
-            dis_loss_cum.backward()
+            losses[f"advd"] = dis_loss 
+            dis_loss.backward()
             self.optimG.step()
             self.optimD.step()
 
@@ -173,12 +172,8 @@ class Trainer():
                         self.writer.add_scalar(key, val.item(), self.iteration)
                 pbar.set_description((description))
                 if self.args.tensorboard:
-                    sw = lambda x: torch.transpose(x, 0, 1)
-                    self.writer.add_image('mask', make_grid(sw(masks), normalize=True), self.iteration)
-                    self.writer.add_image('orig', make_grid((sw(images)+1.0)/2.0, normalize=True), self.iteration)
-                    self.writer.add_image('comp', make_grid((sw(comps)+1.0)/2.0, normalize=True), self.iteration)
-                    
-            
+                    self.add_images(images, masks, comp_imgs)
+
             if self.args.global_rank == 0 and (self.iteration % self.args.save_every) == 0: 
                 self.save()
 

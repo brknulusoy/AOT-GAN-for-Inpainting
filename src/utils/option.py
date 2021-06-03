@@ -50,6 +50,8 @@ parser.add_argument('--rec_loss', type=str, default='1*L1+250*Style+0.1*Perceptu
                     help='losses for reconstruction')
 parser.add_argument('--adv_weight', type=float, default=0.01,
                     help='loss weight for adversarial loss')
+parser.add_argument('--temp_weight', type=float, default=2,
+                    help='loss weight for temporal loss')
 
 # training specifications 
 parser.add_argument('--iterations', type=int, default=1e6,
