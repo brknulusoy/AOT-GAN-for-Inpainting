@@ -23,6 +23,9 @@ def create_loader(args):
         sample_size=args.image_size,
         observer_pad=args.image_size // 4,
     )
+    print(f"Dataset range is {dataset.data_range}")
+    print(f"Dataset size is {len(dataset)}")
+
     data_loader = DataLoader(
         dataset,
         batch_size=args.batch_size // args.world_size,

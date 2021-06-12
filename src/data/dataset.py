@@ -21,14 +21,12 @@ class Viewshed:
         observer_pad=50,
         observer_steps=4,
         observer_view_angle=120,
-        data_range=None,
-        random_state=42,
+        data_range=None
     ):
         self.observer_height = observer_height / data_range
         self.observer_pad = observer_pad
         self.observer_steps = observer_steps
         self.observer_view_angle = observer_view_angle
-        self.random_state = random_state
 
     def get_poi(self, dem):
         h, w = dem.shape
@@ -296,7 +294,6 @@ class TerrainDataset(Dataset):
             observer_pad=self.observer_pad,
             observer_steps=self.block_dimension,
             data_range=self.data_range,
-            random_state=self.random_state,
         )
 
         # * Dataset state
