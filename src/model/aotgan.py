@@ -7,7 +7,7 @@ from .common import BaseNetwork
 
 
 class InpaintGenerator(BaseNetwork):
-    def __init__(self, args):  # 1046
+    def __init__(self, args=None):  # 1046
         super(InpaintGenerator, self).__init__()
 
         self.encoder = nn.Sequential(
@@ -39,9 +39,14 @@ class InpaintGenerator(BaseNetwork):
             nn.ReLU(True),
         )
 
-        self.middle = nn.Sequential(
-            *[AOTBlock(256, args.rates) for _ in range(args.block_num)]
-        )
+        if args is not None:
+            self.middle = nn.Sequential(
+                *[AOTBlock(256, args.rates) for _ in range(args.block_num)]
+            )
+        else:
+            self.middle = nn.Sequential(
+                *[AOTBlock(256, [1, 2, 4, 8]) for _ in range(8)]
+            )
 
         self.decoder = nn.Sequential(
             UpConv(256, 128),
