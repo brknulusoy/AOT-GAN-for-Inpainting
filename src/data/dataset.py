@@ -21,7 +21,7 @@ class Viewshed:
         observer_pad=50,
         observer_steps=4,
         observer_view_angle=120,
-        data_range=None
+        data_range=None,
     ):
         self.observer_height = observer_height / data_range
         self.observer_pad = observer_pad
@@ -249,7 +249,7 @@ class TerrainDataset(Dataset):
         cache_name = os.path.dirname(__file__)
         cache_name += "/tmp/TDSDATA-"
         cache_name += f"RS{self.random_state}-IS{self.sample_size}-"
-        cache_name += hashlib.md5((''.join(sorted(self.files))).encode()).hexdigest()
+        cache_name += hashlib.md5(("".join(sorted(self.files))).encode()).hexdigest()
 
         if os.path.exists(cache_name):
             self.sample_dict = pickle.load(open(cache_name, "rb"))
@@ -396,10 +396,6 @@ class TerrainDataset(Dataset):
             np.random.seed(self.random_state)
             np.random.shuffle(blocks)
 
-        # * Remove blocks that contain nans
-        mask = ~np.isnan(blocks).any(axis=1).any(axis=1)
-        blocks = blocks[mask]
-
         if self.dataset_type == "train":
             blocks = blocks[: int(len(blocks) * self.usable_portion)]
         else:
@@ -408,28 +404,34 @@ class TerrainDataset(Dataset):
         # * Add Variance
         blocks = np.repeat(blocks, self.block_variance, axis=0)
 
-        if return_mask:
-            # * Further filter remeaning data in relation to z-score
-            ranges = Helper.get_ranges(blocks)
-            mask = np.abs(stats.zscore(ranges)) < 2
-            mask &= np.abs(stats.zscore(ranges)) > 0.05
+        if not return_mask:
+            return blocks
 
-            # * Eliminate unwanted ranges
-            mask &= ranges >= 1
-            mask &= ranges < 5
+        # * Remove blocks that contain nans
+        base_mask = ~np.isnan(blocks).any(axis=1).any(axis=1)
 
-            # * Eliminate low terrains for observer
-            mask &= Helper.get_percentage(blocks, 1) > 0.2
-            mask &= Helper.get_percentage(blocks, 5) < 0.9
+        # * Further filter remeaning data in relation to z-score
+        ranges = Helper.get_ranges(blocks[base_mask])
+        mask = np.abs(stats.zscore(ranges)) < 2
+        mask &= np.abs(stats.zscore(ranges)) > 0.05
 
-            # * Eliminate blocks by skewness in relation to z-score
-            skews = Helper.get_skews(blocks)
-            mask &= np.abs(stats.zscore(skews)) < 1
-            mask &= np.abs(stats.zscore(skews)) > 0.1
+        # * Eliminate unwanted ranges
+        mask &= ranges >= 1
+        mask &= ranges < 5
 
-            # * Eliminate blocks by slopes in relation to z-score
-            _, slopes = Helper.get_slopes(blocks)
-            mask &= np.abs(stats.zscore(slopes)) > 0.5
+        # * Eliminate low terrains for observer
+        mask &= Helper.get_percentage(blocks[base_mask], 1) > 0.2
+        mask &= Helper.get_percentage(blocks[base_mask], 5) < 0.9
 
-            return blocks, mask
-        return blocks
+        # * Eliminate blocks by skewness in relation to z-score
+        skews = Helper.get_skews(blocks[base_mask])
+        mask &= np.abs(stats.zscore(skews)) < 1
+        mask &= np.abs(stats.zscore(skews)) > 0.1
+
+        # * Eliminate blocks by slopes in relation to z-score
+        _, slopes = Helper.get_slopes(blocks[base_mask])
+        mask &= np.abs(stats.zscore(slopes)) > 0.5
+
+        base_mask[base_mask == True] &= mask
+
+        return blocks, base_mask

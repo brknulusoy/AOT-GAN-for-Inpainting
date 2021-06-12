@@ -15,7 +15,7 @@ from timeit import default_timer as dt
 def demo(args):
     args.world_size = 1
     IS = args.image_size
-    dataset = dataset = TerrainDataset(
+    dataset = TerrainDataset(
         args.dir_train,
         dataset_type="train",
         randomize=True,
